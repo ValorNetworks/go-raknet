@@ -440,6 +440,13 @@ func (state *connState) openConnectionRequest1(mtu uint16) {
 // openConnectionRequest2 sends an open connection request 2 packet to the
 // server. If not successful, an error is returned.
 func (state *connState) openConnectionRequest2(mtu uint16) {
+	if state.id == 0 {
+		state.id = rand.Int64()
+	}
+	if state.id > 0 {
+		state.id = -state.id
+	}
+
 	data, _ := (&message.OpenConnectionRequest2{
 		ServerAddress:     resolve(state.raddr),
 		MTU:               mtu,

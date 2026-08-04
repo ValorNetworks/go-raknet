@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/sandertv/go-raknet/internal"
@@ -23,8 +24,10 @@ type connectionHandler interface {
 type listenerConnectionHandler struct {
 	listener *Listener
 
-	currentCookieSalt uint64
-	prevCookieSalt    uint64
+	// currentCookieSalt and prevCookieSalt are read by the unconnected datagram workers while
+	// cleanup rotates them on its own goroutine.
+	currentCookieSalt atomic.Uint64
+	prevCookieSalt    atomic.Uint64
 }
 
 var (
@@ -53,8 +56,8 @@ func (h *listenerConnectionHandler) cleanup(done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			h.prevCookieSalt = h.currentCookieSalt
-			h.currentCookieSalt = rand.Uint64()
+			h.prevCookieSalt.Store(h.currentCookieSalt.Load())
+			h.currentCookieSalt.Store(rand.Uint64())
 		}
 	}
 }
@@ -120,7 +123,7 @@ func (h *listenerConnectionHandler) handleOpenConnectionRequest1(b []byte, addr 
 		return fmt.Errorf("handle OPEN_CONNECTION_REQUEST_1: incompatible protocol version %v (listener protocol = %v)", pk.ClientProtocol, protocolVersion)
 	}
 
-	addrCookie := internal.Cookie(addr.(*net.UDPAddr), h.currentCookieSalt)
+	addrCookie := internal.Cookie(addr.(*net.UDPAddr), h.currentCookieSalt.Load())
 	data, _ := (&message.OpenConnectionReply1{
 		ServerGUID:        h.listener.id,
 		Cookie:            addrCookie,
@@ -151,7 +154,7 @@ func (h *listenerConnectionHandler) handleOpenConnectionRequest2(b []byte, addr 
 
 	if !h.listener.conf.DisableCookies {
 		udpAddr, _ := addr.(*net.UDPAddr)
-		cookie1, cookie2 := internal.Cookie(udpAddr, h.currentCookieSalt), internal.Cookie(udpAddr, h.prevCookieSalt)
+		cookie1, cookie2 := internal.Cookie(udpAddr, h.currentCookieSalt.Load()), internal.Cookie(udpAddr, h.prevCookieSalt.Load())
 		isFirstCookie, isSecondCookie := pk.Cookie == cookie1, pk.Cookie == cookie2
 
 		// Reject missing, invalid, or ambiguous cookies.

@@ -25,9 +25,10 @@ type resendMap struct {
 // resendRecord represents one or more packets with a timestamp from when they
 // were initially sent. It may be either acknowledged or NACKed by the other end.
 type resendRecord struct {
-	packets   []*packet
-	timestamp time.Time
-	length    int
+	packets        []*packet
+	timestamp      time.Time
+	length         int
+	sampleEligible bool
 }
 
 // newRecoveryQueue returns a new initialised recovery queue.
@@ -39,29 +40,30 @@ func newRecoveryQueue() *resendMap {
 
 // add puts the packets at the index passed and records the current time and
 // encoded datagram length in bytes.
-func (m *resendMap) add(index uint24, packets []*packet, length int) {
-	m.unacknowledged[index] = resendRecord{packets: packets, timestamp: time.Now(), length: length}
+func (m *resendMap) add(index uint24, packets []*packet, length int, sampleEligible bool) {
+	m.unacknowledged[index] = resendRecord{packets: packets, timestamp: time.Now(), length: length, sampleEligible: sampleEligible}
 	m.inFlightBytes += length
 }
 
 // acknowledge marks packets with the index passed as acknowledged. The packets
 // are removed from the resendMap and returned if found.
-func (m *resendMap) acknowledge(index uint24) ([]*packet, bool) {
+func (m *resendMap) acknowledge(index uint24) ([]*packet, time.Duration, bool) {
 	return m.remove(index, 1)
 }
 
 // retransmit looks up packets with an index from the resendMap so that they may
 // be resent.
 func (m *resendMap) retransmit(index uint24) ([]*packet, bool) {
-	return m.remove(index, 2)
+	packets, _, ok := m.remove(index, 2)
+	return packets, ok
 }
 
 // remove deletes an index from the resendMap and, for original transmissions
 // (mul == 1), feeds the RTT sample into the SRTT/RTTVAR estimator.
-func (m *resendMap) remove(index uint24, mul int) ([]*packet, bool) {
+func (m *resendMap) remove(index uint24, mul int) ([]*packet, time.Duration, bool) {
 	record, ok := m.unacknowledged[index]
 	if !ok {
-		return nil, false
+		return nil, 0, false
 	}
 	delete(m.unacknowledged, index)
 
@@ -70,12 +72,16 @@ func (m *resendMap) remove(index uint24, mul int) ([]*packet, bool) {
 
 	// For retransmissions (mul > 1), we intentionally do not update RTT in
 	// order to follow Karn's algorithm and avoid ambiguous samples.
+	var cleanSample time.Duration
 	if mul == 1 {
 		sample := time.Since(record.timestamp)
 		m.lastSample = sample
 		m.updateRTT(sample)
+		if record.sampleEligible {
+			cleanSample = sample
+		}
 	}
-	return record.packets, true
+	return record.packets, cleanSample, true
 }
 
 // updateRTT updates SRTT, RTTVAR and RTO based on a new RTT sample.

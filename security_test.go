@@ -468,7 +468,7 @@ func TestSecurity_NACKQueueSizeLimit(t *testing.T) {
 			messageIndex: i,
 			content:      []byte{0x01, 0x02, 0x03},
 		}
-		conn.retransmission.add(i, []*packet{pk}, 100)
+		conn.retransmission.add(i, []*packet{pk}, 100, true)
 	}
 
 	// Try to enqueue more sequences than the limit allows.
@@ -512,7 +512,7 @@ func TestSecurity_NACKRateLimiting(t *testing.T) {
 			messageIndex: i,
 			content:      []byte{0x01, 0x02, 0x03},
 		}
-		conn.retransmission.add(i, []*packet{pk}, 100)
+		conn.retransmission.add(i, []*packet{pk}, 100, true)
 	}
 	conn.mu.Unlock()
 
@@ -559,7 +559,7 @@ func TestSecurity_NACKOnlyValidSequences(t *testing.T) {
 			messageIndex: i,
 			content:      []byte{0x01, 0x02, 0x03},
 		}
-		conn.retransmission.add(i, []*packet{pk}, 100)
+		conn.retransmission.add(i, []*packet{pk}, 100, true)
 	}
 	conn.mu.Unlock()
 
@@ -610,7 +610,7 @@ func TestSecurity_PacketsCanBeResentMultipleTimes(t *testing.T) {
 		messageIndex: 42,
 		content:      []byte{0x01, 0x02, 0x03},
 	}
-	conn.retransmission.add(0, []*packet{pk}, 100)
+	conn.retransmission.add(0, []*packet{pk}, 100, true)
 	conn.mu.Unlock()
 
 	resendCount = 0 // Reset after setup.
@@ -666,7 +666,7 @@ func TestSecurity_NACKBudgetResetsAfterWindow(t *testing.T) {
 			messageIndex: i,
 			content:      []byte{0x01},
 		}
-		conn.retransmission.add(i, []*packet{pk}, 50)
+		conn.retransmission.add(i, []*packet{pk}, 50, true)
 	}
 	conn.mu.Unlock()
 
@@ -732,7 +732,7 @@ func TestSecurity_LegitimatePacketLossScenario(t *testing.T) {
 			messageIndex: i,
 			content:      make([]byte, 100),
 		}
-		conn.retransmission.add(i, []*packet{pk}, 150)
+		conn.retransmission.add(i, []*packet{pk}, 150, true)
 	}
 	conn.mu.Unlock()
 
@@ -790,7 +790,7 @@ func TestSecurity_ModeratePacketLossStillWorks(t *testing.T) {
 			messageIndex: i,
 			content:      make([]byte, 50),
 		}
-		conn.retransmission.add(i, []*packet{pk}, 100)
+		conn.retransmission.add(i, []*packet{pk}, 100, true)
 	}
 	conn.mu.Unlock()
 
@@ -868,7 +868,7 @@ func TestSecurity_NACKAmplificationAttackMitigated(t *testing.T) {
 			messageIndex: i,
 			content:      make([]byte, 1000), // ~1KB per packet.
 		}
-		conn.retransmission.add(i, []*packet{pk}, 1050)
+		conn.retransmission.add(i, []*packet{pk}, 1050, true)
 	}
 	conn.mu.Unlock()
 

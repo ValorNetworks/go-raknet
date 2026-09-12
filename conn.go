@@ -132,6 +132,7 @@ type Conn struct {
 	// retransmission is a queue filled with packets that were sent with a given
 	// datagram sequence number.
 	retransmission *resendMap
+	statistics     connectionStatistics
 
 	lastActivity atomic.Int64
 	rawLatency   atomic.Int64
@@ -1140,7 +1141,8 @@ func (conn *Conn) handleACK(b []byte) error {
 	for _, sequenceNumber := range ack.packets {
 		// If this sequence number was queued for resend, mark it as no longer needed.
 		delete(conn.ccNackSet, sequenceNumber)
-		if packets, ok := conn.retransmission.acknowledge(sequenceNumber); ok {
+		if packets, sample, ok := conn.retransmission.acknowledge(sequenceNumber); ok {
+			conn.statistics.observeRTT(time.Now(), sample)
 			// We don't know the full datagram size here anymore because it has
 			// been removed from the resendMap, but we can approximate the
 			// contribution by using the effective MTU as MSS.
@@ -1240,6 +1242,10 @@ func (conn *Conn) handleNACK(b []byte) error {
 // passed. It is assigned a new sequence number and added to the retransmission.
 // Returns the encoded datagram length in bytes on success.
 func (conn *Conn) sendDatagram(packets []*packet) (int, error) {
+	return conn.sendDatagramKind(packets, false)
+}
+
+func (conn *Conn) sendDatagramKind(packets []*packet, resent bool) (int, error) {
 	flags := byte(bitFlagDatagram)
 	// Request B (bandwidth) and AS (arrival rate) from receiver during slow start, when we need arrival rate to calculate initial sending rate upon exiting slow start.
 	if conn.cc.IsInSlowStart() {
@@ -1264,9 +1270,17 @@ func (conn *Conn) sendDatagram(packets []*packet) (int, error) {
 
 	// We then re-add the packets to the recovery queue in case the new one gets
 	// lost too, in which case we need to resend them again.
-	conn.retransmission.add(seq, packets, datagramLen)
+	conn.retransmission.add(seq, packets, datagramLen, !resent)
 
-	if err := conn.writeTo(conn.buf.Bytes(), conn.raddr); err != nil {
+	sent, err := conn.writeToResult(conn.buf.Bytes(), conn.raddr)
+	if sent {
+		conn.statistics.observeTransmission(time.Now(), resent)
+	} else {
+		record := conn.retransmission.unacknowledged[seq]
+		record.sampleEligible = false
+		conn.retransmission.unacknowledged[seq] = record
+	}
+	if err != nil {
 		return 0, fmt.Errorf("send datagram: %w", err)
 	}
 	return datagramLen, nil
@@ -1300,7 +1314,11 @@ func (conn *Conn) sendUnreliableDatagram(packets []*packet) error {
 	// Unreliable packets are not added to the retransmission queue.
 	// They are fire-and-forget.
 
-	if err := conn.writeTo(conn.buf.Bytes(), conn.raddr); err != nil {
+	sent, err := conn.writeToResult(conn.buf.Bytes(), conn.raddr)
+	if sent {
+		conn.statistics.observeTransmission(time.Now(), false)
+	}
+	if err != nil {
 		return fmt.Errorf("send unreliable datagram: %w", err)
 	}
 	return nil
@@ -1311,12 +1329,20 @@ func (conn *Conn) sendUnreliableDatagram(packets []*packet) error {
 // is logged but not returned. This is done because at this stage, packets
 // being lost to an error can be recovered through resending.
 func (conn *Conn) writeTo(p []byte, raddr net.Addr) error {
-	if _, err := conn.conn.WriteTo(p, raddr); errors.Is(err, net.ErrClosed) {
-		return fmt.Errorf("write to: %w", err)
+	_, err := conn.writeToResult(p, raddr)
+	return err
+}
+
+// Preserve the existing recoverable-error handling while distinguishing an
+// actual successful UDP write from a swallowed error for passive statistics.
+func (conn *Conn) writeToResult(p []byte, raddr net.Addr) (bool, error) {
+	n, err := conn.conn.WriteTo(p, raddr)
+	if errors.Is(err, net.ErrClosed) {
+		return false, fmt.Errorf("write to: %w", err)
 	} else if err != nil {
 		conn.handler.log().Error("write to: "+err.Error(), "raddr", raddr.String())
 	}
-	return nil
+	return err == nil && n == len(p), nil
 }
 
 type PendingConnection struct {
@@ -1424,7 +1450,7 @@ func (conn *Conn) flushResendQueueLocked() {
 			continue
 		}
 
-		sentLen, err := conn.sendDatagram(packets)
+		sentLen, err := conn.sendDatagramKind(packets, true)
 		if err != nil {
 			// Failed to send: push back to the front to retry later and stop.
 			conn.ccNackQueue = append([]uint24{seq}, conn.ccNackQueue...)
